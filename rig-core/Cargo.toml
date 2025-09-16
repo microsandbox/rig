@@ -41,7 +41,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
 worker = { workspace = true, optional = true }
-rmcp = { version = "0.9", optional = true, features = ["client"] }
+rmcp = { git = "https://github.com/zerocore-ai/rust-sdk", branch = "develop", optional = true, features = ["client"] }
 tokio = { workspace = true, features = ["rt", "sync"] }
 http = "1.3.1"
 tracing-futures = { version = "0.2.5", features = ["futures-03"] }
@@ -62,10 +62,10 @@ base64 = { workspace = true }
 
 # Required for `rmcp` example
 hyper-util = { version = "0.1.14", features = ["service", "server"] }
-rmcp = { version = "0.9", features = [
+rmcp = { git = "https://github.com/zerocore-ai/rust-sdk", branch = "develop", features = [
   "client",
   "macros",
-  "reqwest",                                  # required for some strange reason
+  "reqwest",
   "transport-streamable-http-client",
   "transport-streamable-http-client-reqwest",
   "transport-streamable-http-server-session",
