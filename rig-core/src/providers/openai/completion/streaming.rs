@@ -108,11 +108,14 @@ pub async fn send_compatible_streaming_request(
                         continue;
                     }
 
-                    let data = serde_json::from_str::<StreamingCompletionChunk>(&message.data);
-                    let Ok(data) = data else {
-                        let err = data.unwrap_err();
-                        debug!("Couldn't serialize data as StreamingCompletionChunk: {:?}", err);
-                        continue;
+                    let data = match serde_json::from_str::<StreamingCompletionChunk>(&message.data) {
+                        Ok(data) => data,
+                        Err(_) => {
+                            // Don't silently swallow - yield the unparseable message as an error
+                            tracing::error!(data = %message.data, "Failed to parse streaming response");
+                            yield Err(CompletionError::ResponseError(message.data.clone()));
+                            break;
+                        }
                     };
 
                     if let Some(choice) = data.choices.first() {
