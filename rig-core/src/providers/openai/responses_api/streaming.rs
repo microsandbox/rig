@@ -12,7 +12,7 @@ use crate::wasm_compat::WasmCompatSend;
 use async_stream::stream;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
-use tracing::{Level, debug, enabled, info_span};
+use tracing::{Level, enabled, info_span};
 use tracing_futures::Instrument as _;
 
 use super::{CompletionResponse, Output};
@@ -272,12 +272,14 @@ where
                             continue;
                         }
 
-                        let data = serde_json::from_str::<StreamingCompletionChunk>(&evt.data);
-
-                        let Ok(data) = data else {
-                            let err = data.unwrap_err();
-                            debug!("Couldn't serialize data as StreamingCompletionResponse: {:?}", err);
-                            continue;
+                        let data = match serde_json::from_str::<StreamingCompletionChunk>(&evt.data) {
+                            Ok(data) => data,
+                            Err(_) => {
+                                // Don't silently swallow - yield the unparseable message as an error
+                                tracing::error!(data = %evt.data, "Failed to parse streaming response");
+                                yield Err(CompletionError::ResponseError(evt.data.clone()));
+                                break;
+                            }
                         };
 
                         if let StreamingCompletionChunk::Delta(chunk) = &data {

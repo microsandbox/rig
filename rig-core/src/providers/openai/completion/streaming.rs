@@ -171,9 +171,11 @@ where
 
                     let data = match serde_json::from_str::<StreamingCompletionChunk>(&message.data) {
                         Ok(data) => data,
-                        Err(error) => {
-                            tracing::error!(?error, message = message.data, "Failed to parse SSE message");
-                            continue;
+                        Err(_) => {
+                            // Don't silently swallow - yield the unparseable message as an error
+                            tracing::error!(data = %message.data, "Failed to parse streaming response");
+                            yield Err(CompletionError::ResponseError(message.data.clone()));
+                            break;
                         }
                     };
 
