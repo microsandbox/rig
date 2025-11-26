@@ -9390,7 +9390,7 @@ dependencies = [
 [[package]]
 name = "rmcp"
 version = "0.6.4"
-source = "git+https://github.com/microsandbox/rust-sdk?branch=develop#f8a747eaca997c8382e7bfbc7de3a859700c51f5"
+source = "git+https://github.com/zerocore-ai/rust-sdk?branch=develop#6717d2ff90a91b0ed2f26f702782d5b7f5f62369"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -9420,7 +9420,7 @@ dependencies = [
 [[package]]
 name = "rmcp-macros"
 version = "0.6.4"
-source = "git+https://github.com/microsandbox/rust-sdk?branch=develop#f8a747eaca997c8382e7bfbc7de3a859700c51f5"
+source = "git+https://github.com/zerocore-ai/rust-sdk?branch=develop#6717d2ff90a91b0ed2f26f702782d5b7f5f62369"
 dependencies = [
  "darling 0.21.0",
  "proc-macro2",
