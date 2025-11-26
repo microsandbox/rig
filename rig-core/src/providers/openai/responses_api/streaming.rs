@@ -138,7 +138,7 @@ pub struct ContentPartChunk {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(tag = "type")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentPartChunkPart {
     OutputText { text: String },
     SummaryText { text: String },
@@ -195,7 +195,7 @@ pub struct SummaryTextChunk {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(tag = "type")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum SummaryPartChunkPart {
     SummaryText { text: String },
 }
