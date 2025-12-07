@@ -21,6 +21,86 @@ use crate::{
     wasm_compat::{WasmBoxedFuture, WasmCompatSend, WasmCompatSync},
 };
 
+//--------------------------------------------------------------------------------------------------
+// Types: ToolOutput
+//--------------------------------------------------------------------------------------------------
+
+/// Output from a tool call - either simple text or rich MCP content.
+///
+/// This enum allows tools to return either a simple string result (for non-MCP tools)
+/// or a full MCP `CallToolResult` that preserves all content types, annotations,
+/// and structured content.
+#[derive(Debug, Clone)]
+pub enum ToolOutput {
+    /// Simple text output (non-MCP tools)
+    Text(String),
+
+    /// Full MCP output with all content types preserved
+    #[cfg(feature = "rmcp")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "rmcp")))]
+    Mcp(::rmcp::model::CallToolResult),
+}
+
+impl ToolOutput {
+    /// Get text representation of the output.
+    ///
+    /// For MCP results, this concatenates all text content items.
+    /// Note: This is a lossy conversion for MCP content - use `as_mcp()` to
+    /// access the full content including images, audio, etc.
+    pub fn as_text(&self) -> String {
+        match self {
+            ToolOutput::Text(s) => s.clone(),
+            #[cfg(feature = "rmcp")]
+            ToolOutput::Mcp(result) => result
+                .content
+                .iter()
+                .filter_map(|c| c.raw.as_text())
+                .map(|t| t.text.clone())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        }
+    }
+
+    /// Check if this is an MCP result.
+    #[cfg(feature = "rmcp")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "rmcp")))]
+    pub fn is_mcp(&self) -> bool {
+        matches!(self, ToolOutput::Mcp(_))
+    }
+
+    /// Get the MCP result if this is an MCP output.
+    #[cfg(feature = "rmcp")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "rmcp")))]
+    pub fn as_mcp(&self) -> Option<&::rmcp::model::CallToolResult> {
+        match self {
+            ToolOutput::Mcp(result) => Some(result),
+            _ => None,
+        }
+    }
+
+    /// Check if this result represents an error.
+    pub fn is_error(&self) -> bool {
+        match self {
+            ToolOutput::Text(_) => false,
+            #[cfg(feature = "rmcp")]
+            ToolOutput::Mcp(result) => result.is_error.unwrap_or(false),
+        }
+    }
+}
+
+impl From<String> for ToolOutput {
+    fn from(s: String) -> Self {
+        ToolOutput::Text(s)
+    }
+}
+
+#[cfg(feature = "rmcp")]
+impl From<::rmcp::model::CallToolResult> for ToolOutput {
+    fn from(result: ::rmcp::model::CallToolResult) -> Self {
+        ToolOutput::Mcp(result)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {
     #[cfg(not(target_family = "wasm"))]
@@ -188,22 +268,79 @@ impl<T: Tool> ToolDyn for T {
 #[cfg_attr(docsrs, doc(cfg(feature = "rmcp")))]
 pub mod rmcp {
     use crate::completion::ToolDefinition;
-    use crate::tool::ToolDyn;
-    use crate::tool::ToolError;
-    use crate::wasm_compat::WasmBoxedFuture;
+    use crate::tool::{ToolDyn, ToolError, ToolOutput};
+    use crate::wasm_compat::{WasmBoxedFuture, WasmCompatSend, WasmCompatSync};
     use rmcp::model::RawContent;
     use std::borrow::Cow;
 
+    //----------------------------------------------------------------------------------------------
+    // Types
+    //----------------------------------------------------------------------------------------------
+
+    /// Trait for MCP tools that can return rich content.
+    ///
+    /// This trait extends `ToolDyn` to provide access to the full `CallToolResult`
+    /// from MCP tool calls, preserving all content types (text, images, audio,
+    /// resources, resource links), annotations, and structured content.
+    ///
+    /// # Example
+    /// ```ignore
+    /// use rig::tool::rmcp::McpToolDyn;
+    ///
+    /// async fn call_mcp_tool(tool: &dyn McpToolDyn, args: &str) {
+    ///     let result = tool.call_mcp(args.to_string()).await.unwrap();
+    ///
+    ///     // Access all content types
+    ///     for content in &result.content {
+    ///         match &content.raw {
+    ///             RawContent::Text(t) => println!("Text: {}", t.text),
+    ///             RawContent::Image(i) => println!("Image: {} bytes", i.data.len()),
+    ///             RawContent::Audio(a) => println!("Audio: {}", a.mime_type),
+    ///             _ => {}
+    ///         }
+    ///     }
+    ///
+    ///     // Access structured content
+    ///     if let Some(structured) = &result.structured_content {
+    ///         println!("Structured data: {}", structured);
+    ///     }
+    /// }
+    /// ```
+    pub trait McpToolDyn: ToolDyn + WasmCompatSend + WasmCompatSync {
+        /// Call the tool and return the full MCP result.
+        ///
+        /// Unlike `ToolDyn::call` which returns a `String`, this method preserves
+        /// the complete `CallToolResult` including:
+        /// - Multiple content items (text, images, audio, resources, resource links)
+        /// - Annotations (audience, priority, lastModified)
+        /// - Structured content for programmatic access
+        /// - Error status
+        fn call_mcp<'a>(
+            &'a self,
+            args: String,
+        ) -> WasmBoxedFuture<'a, Result<::rmcp::model::CallToolResult, ToolError>>;
+
+        /// Call the tool and return output wrapped in `ToolOutput::Mcp`.
+        ///
+        /// This is a convenience method that wraps `call_mcp` result in `ToolOutput`.
+        fn call_mcp_output<'a>(
+            &'a self,
+            args: String,
+        ) -> WasmBoxedFuture<'a, Result<ToolOutput, ToolError>> {
+            Box::pin(async move { self.call_mcp(args).await.map(ToolOutput::Mcp) })
+        }
+    }
+
     #[derive(Clone)]
     pub struct McpTool {
-        definition: rmcp::model::Tool,
-        client: rmcp::service::ServerSink,
+        definition: ::rmcp::model::Tool,
+        client: ::rmcp::service::ServerSink,
     }
 
     impl McpTool {
         pub fn from_mcp_server(
-            definition: rmcp::model::Tool,
-            client: rmcp::service::ServerSink,
+            definition: ::rmcp::model::Tool,
+            client: ::rmcp::service::ServerSink,
         ) -> Self {
             Self { definition, client }
         }
@@ -332,6 +469,27 @@ pub mod rmcp {
             })
         }
     }
+
+    //----------------------------------------------------------------------------------------------
+    // Trait Implementations: McpToolDyn
+    //----------------------------------------------------------------------------------------------
+
+    impl McpToolDyn for McpTool {
+        fn call_mcp<'a>(
+            &'a self,
+            args: String,
+        ) -> WasmBoxedFuture<'a, Result<::rmcp::model::CallToolResult, ToolError>> {
+            let name = self.definition.name.clone();
+            let arguments = serde_json::from_str(&args).unwrap_or_default();
+
+            Box::pin(async move {
+                self.client
+                    .call_tool(::rmcp::model::CallToolRequestParam { name, arguments })
+                    .await
+                    .map_err(|e| McpToolError(format!("Tool call failed: {e}")).into())
+            })
+        }
+    }
 }
 
 /// Wrapper trait to allow for dynamic dispatch of raggable tools
@@ -357,6 +515,8 @@ where
 pub(crate) enum ToolType {
     Simple(Box<dyn ToolDyn>),
     Embedding(Box<dyn ToolEmbeddingDyn>),
+    #[cfg(feature = "rmcp")]
+    Mcp(Box<dyn rmcp::McpToolDyn>),
 }
 
 impl ToolType {
@@ -364,6 +524,8 @@ impl ToolType {
         match self {
             ToolType::Simple(tool) => tool.name(),
             ToolType::Embedding(tool) => tool.name(),
+            #[cfg(feature = "rmcp")]
+            ToolType::Mcp(tool) => tool.name(),
         }
     }
 
@@ -371,6 +533,8 @@ impl ToolType {
         match self {
             ToolType::Simple(tool) => tool.definition(prompt).await,
             ToolType::Embedding(tool) => tool.definition(prompt).await,
+            #[cfg(feature = "rmcp")]
+            ToolType::Mcp(tool) => tool.definition(prompt).await,
         }
     }
 
@@ -378,7 +542,29 @@ impl ToolType {
         match self {
             ToolType::Simple(tool) => tool.call(args).await,
             ToolType::Embedding(tool) => tool.call(args).await,
+            #[cfg(feature = "rmcp")]
+            ToolType::Mcp(tool) => tool.call(args).await,
         }
+    }
+
+    /// Call the tool and get output as `ToolOutput`.
+    ///
+    /// For non-MCP tools, this returns `ToolOutput::Text`.
+    /// For MCP tools, this returns `ToolOutput::Mcp` with the full `CallToolResult`.
+    pub async fn call_mcp(&self, args: String) -> Result<ToolOutput, ToolError> {
+        match self {
+            ToolType::Simple(tool) => tool.call(args).await.map(ToolOutput::Text),
+            ToolType::Embedding(tool) => tool.call(args).await.map(ToolOutput::Text),
+            #[cfg(feature = "rmcp")]
+            ToolType::Mcp(tool) => tool.call_mcp_output(args).await,
+        }
+    }
+
+    /// Check if this is an MCP tool.
+    #[cfg(feature = "rmcp")]
+    #[allow(dead_code)]
+    pub fn is_mcp(&self) -> bool {
+        matches!(self, ToolType::Mcp(_))
     }
 }
 
@@ -473,42 +659,58 @@ impl ToolSet {
         }
     }
 
+    /// Call a tool and get output as `ToolOutput`.
+    ///
+    /// For non-MCP tools, this returns `ToolOutput::Text`.
+    /// For MCP tools, this returns `ToolOutput::Mcp` with the full `CallToolResult`.
+    pub async fn call_mcp(&self, toolname: &str, args: String) -> Result<ToolOutput, ToolSetError> {
+        if let Some(tool) = self.tools.get(toolname) {
+            tracing::debug!(target: "rig",
+                "Calling tool {toolname} (mcp mode) with args:\n{}",
+                serde_json::to_string_pretty(&args).unwrap()
+            );
+            Ok(tool.call_mcp(args).await?)
+        } else {
+            Err(ToolSetError::ToolNotFoundError(toolname.to_string()))
+        }
+    }
+
+    /// Add an MCP tool to the toolset.
+    ///
+    /// MCP tools are stored separately to enable full content access via `call_mcp`.
+    #[cfg(feature = "rmcp")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "rmcp")))]
+    pub fn add_mcp_tool(&mut self, tool: impl rmcp::McpToolDyn + 'static) {
+        self.tools
+            .insert(tool.name(), ToolType::Mcp(Box::new(tool)));
+    }
+
+    /// Add a boxed MCP tool to the toolset.
+    #[cfg(feature = "rmcp")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "rmcp")))]
+    pub fn add_mcp_tool_boxed(&mut self, tool: Box<dyn rmcp::McpToolDyn>) {
+        self.tools.insert(tool.name(), ToolType::Mcp(tool));
+    }
+
     /// Get the documents of all the tools in the toolset
     pub async fn documents(&self) -> Result<Vec<completion::Document>, ToolSetError> {
         let mut docs = Vec::new();
         for tool in self.tools.values() {
-            match tool {
-                ToolType::Simple(tool) => {
-                    docs.push(completion::Document {
-                        id: tool.name(),
-                        text: format!(
-                            "\
-                            Tool: {}\n\
-                            Definition: \n\
-                            {}\
-                        ",
-                            tool.name(),
-                            serde_json::to_string_pretty(&tool.definition("".to_string()).await)?
-                        ),
-                        additional_props: HashMap::new(),
-                    });
-                }
-                ToolType::Embedding(tool) => {
-                    docs.push(completion::Document {
-                        id: tool.name(),
-                        text: format!(
-                            "\
-                            Tool: {}\n\
-                            Definition: \n\
-                            {}\
-                        ",
-                            tool.name(),
-                            serde_json::to_string_pretty(&tool.definition("".to_string()).await)?
-                        ),
-                        additional_props: HashMap::new(),
-                    });
-                }
-            }
+            let (name, definition) = match tool {
+                ToolType::Simple(tool) => (tool.name(), tool.definition("".to_string()).await),
+                ToolType::Embedding(tool) => (tool.name(), tool.definition("".to_string()).await),
+                #[cfg(feature = "rmcp")]
+                ToolType::Mcp(tool) => (tool.name(), tool.definition("".to_string()).await),
+            };
+            docs.push(completion::Document {
+                id: name.clone(),
+                text: format!(
+                    "Tool: {}\nDefinition: \n{}",
+                    name,
+                    serde_json::to_string_pretty(&definition)?
+                ),
+                additional_props: HashMap::new(),
+            });
         }
         Ok(docs)
     }

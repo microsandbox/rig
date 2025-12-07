@@ -357,11 +357,15 @@ impl DynClientBuilder {
     where
         Models: ToString,
     {
-        let key = Self::to_key(provider_name.into(), &model);
+        let provider: &'static str = provider_name.into();
+        let key = Self::to_key(provider, &model);
 
+        // First try the full key (provider:model), then fall back to just provider name
+        // This is needed because register_all() registers with just provider name
         let client = self
             .0
             .get(&key)
+            .or_else(|| self.0.get(provider))
             .ok_or_else(|| Error::NotFound(key.clone()))
             .and_then(|factory| (factory.from_env)())?;
 
