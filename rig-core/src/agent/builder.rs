@@ -168,7 +168,10 @@ where
         client: rmcp::service::ServerSink,
     ) -> AgentBuilderSimple<M> {
         let toolname = tool.name.clone().to_string();
-        let tools = ToolSet::from_tools(vec![RmcpTool::from_mcp_server(tool, client)]);
+        // Use add_mcp_tool to register as ToolType::Mcp (not ToolType::Simple)
+        // This ensures call_mcp returns ToolOutput::Mcp with full CallToolResult
+        let mut tools = ToolSet::default();
+        tools.add_mcp_tool(RmcpTool::from_mcp_server(tool, client));
         let static_tools = vec![toolname];
 
         AgentBuilderSimple {
@@ -196,18 +199,18 @@ where
         tools: Vec<rmcp::model::Tool>,
         client: rmcp::service::ServerSink,
     ) -> AgentBuilderSimple<M> {
-        let (static_tools, tools) = tools.into_iter().fold(
-            (Vec::new(), Vec::new()),
-            |(mut toolnames, mut toolset), tool| {
+        let mut toolset = ToolSet::default();
+        let static_tools: Vec<String> = tools
+            .into_iter()
+            .map(|tool| {
                 let tool_name = tool.name.to_string();
-                let tool = RmcpTool::from_mcp_server(tool, client.clone());
-                toolnames.push(tool_name);
-                toolset.push(tool);
-                (toolnames, toolset)
-            },
-        );
+                // Use add_mcp_tool to register as ToolType::Mcp (not ToolType::Simple)
+                toolset.add_mcp_tool(RmcpTool::from_mcp_server(tool, client.clone()));
+                tool_name
+            })
+            .collect();
 
-        let tools = ToolSet::from_tools(tools);
+        let tools = toolset;
 
         AgentBuilderSimple {
             name: self.name,
@@ -452,7 +455,8 @@ where
             let tool_name = tool.name.to_string();
             let tool = RmcpTool::from_mcp_server(tool, client.clone());
             self.static_tools.push(tool_name);
-            self.tools.add_tool(tool);
+            // Use add_mcp_tool to register as ToolType::Mcp (not ToolType::Simple)
+            self.tools.add_mcp_tool(tool);
         }
 
         self

@@ -3,7 +3,7 @@ use tokio::sync::mpsc::{Sender, error::SendError};
 
 use crate::{
     completion::{CompletionError, ToolDefinition},
-    tool::{Tool, ToolDyn, ToolError, ToolSet, ToolSetError},
+    tool::{Tool, ToolDyn, ToolError, ToolOutput, ToolSet, ToolSetError},
     vector_store::{VectorSearchRequest, VectorStoreError, VectorStoreIndexDyn, request::Filter},
 };
 
@@ -58,14 +58,17 @@ impl ToolServer {
         self
     }
 
-    // Add an MCP tool (from `rmcp`) to the agent
+    /// Add an MCP tool (from `rmcp`) to the agent.
+    ///
+    /// MCP tools are stored in a way that preserves rich content access.
+    /// Use `call_tool_mcp` to get the full `CallToolResult` with all content types.
     #[cfg_attr(docsrs, doc(cfg(feature = "rmcp")))]
     #[cfg(feature = "rmcp")]
     pub fn rmcp_tool(mut self, tool: rmcp::model::Tool, client: rmcp::service::ServerSink) -> Self {
         use crate::tool::rmcp::McpTool;
         let toolname = tool.name.clone();
         self.toolset
-            .add_tool(McpTool::from_mcp_server(tool, client));
+            .add_mcp_tool(McpTool::from_mcp_server(tool, client));
         self.static_tool_names.push(toolname.to_string());
         self
     }
@@ -136,6 +139,19 @@ impl ToolServer {
                 match self.toolset.call(&name, args.clone()).await {
                     Ok(result) => {
                         let _ = callback_channel.send(ToolServerResponse::ToolExecuted { result });
+                    }
+                    Err(err) => {
+                        let _ = callback_channel.send(ToolServerResponse::ToolError {
+                            error: err.to_string(),
+                        });
+                    }
+                }
+            }
+            ToolServerRequestMessageKind::CallToolMcp { name, args } => {
+                match self.toolset.call_mcp(&name, args.clone()).await {
+                    Ok(result) => {
+                        let _ =
+                            callback_channel.send(ToolServerResponse::ToolExecutedMcp { result });
                     }
                     Err(err) => {
                         let _ = callback_channel.send(ToolServerResponse::ToolError {
@@ -293,6 +309,40 @@ impl ToolServerHandle {
         }
     }
 
+    /// Call a tool and get output as `ToolOutput`.
+    ///
+    /// For non-MCP tools, this returns `ToolOutput::Text`.
+    /// For MCP tools, this returns `ToolOutput::Mcp` with the full `CallToolResult`
+    /// including all content types (text, images, audio, resources), annotations,
+    /// and structured content.
+    pub async fn call_tool_mcp(
+        &self,
+        tool_name: &str,
+        args: &str,
+    ) -> Result<ToolOutput, ToolServerError> {
+        let (tx, rx) = futures::channel::oneshot::channel();
+
+        self.0
+            .send(ToolServerRequest {
+                callback_channel: tx,
+                data: ToolServerRequestMessageKind::CallToolMcp {
+                    name: tool_name.to_string(),
+                    args: args.to_string(),
+                },
+            })
+            .await?;
+
+        let res = rx.await?;
+
+        match res {
+            ToolServerResponse::ToolExecutedMcp { result } => Ok(result),
+            ToolServerResponse::ToolError { error } => Err(ToolServerError::ToolsetError(
+                ToolSetError::ToolCallError(ToolError::ToolCallError(error.into())),
+            )),
+            invalid => Err(ToolServerError::InvalidMessage(invalid)),
+        }
+    }
+
     pub async fn get_tool_defs(
         &self,
         prompt: Option<String>,
@@ -326,14 +376,16 @@ pub enum ToolServerRequestMessageKind {
     AppendToolset(ToolSet),
     RemoveTool { tool_name: String },
     CallTool { name: String, args: String },
+    CallToolMcp { name: String, args: String },
     GetToolDefs { prompt: Option<String> },
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(Debug)]
 pub enum ToolServerResponse {
     ToolAdded,
     ToolDeleted,
     ToolExecuted { result: String },
+    ToolExecutedMcp { result: ToolOutput },
     ToolError { error: String },
     ToolDefinitions(Vec<ToolDefinition>),
 }
