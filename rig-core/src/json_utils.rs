@@ -58,6 +58,10 @@ pub mod stringified_json {
         D: Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
+        // Handle empty string as null - OpenAI sends empty arguments for in-progress tool calls
+        if s.is_empty() {
+            return Ok(serde_json::Value::Null);
+        }
         serde_json::from_str(&s).map_err(serde::de::Error::custom)
     }
 }

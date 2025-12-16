@@ -153,8 +153,7 @@ pub struct DeltaTextChunk {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DeltaTextChunkWithItemId {
-    pub item_id: String,
-    pub content_index: u64,
+    // Note: item_id and output_index are in the parent ItemChunk struct (to avoid serde flatten conflicts)
     pub sequence_number: u64,
     pub delta: String,
 }
@@ -175,9 +174,9 @@ pub struct RefusalTextChunk {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ArgsTextChunk {
-    pub content_index: u64,
+    // Note: item_id and output_index are in the parent ItemChunk struct (to avoid serde flatten conflicts)
     pub sequence_number: u64,
-    pub arguments: serde_json::Value,
+    pub arguments: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -274,9 +273,9 @@ where
 
                         let data = match serde_json::from_str::<StreamingCompletionChunk>(&evt.data) {
                             Ok(data) => data,
-                            Err(_) => {
+                            Err(e) => {
                                 // Don't silently swallow - yield the unparseable message as an error
-                                tracing::error!(data = %evt.data, "Failed to parse streaming response");
+                                tracing::error!(data = %evt.data, error = %e, "Failed to parse streaming response");
                                 yield Err(CompletionError::ResponseError(evt.data.clone()));
                                 break;
                             }
@@ -313,7 +312,9 @@ where
                                     yield Ok(streaming::RawStreamingChoice::Message(delta.delta.clone()))
                                 }
                                 ItemChunkKind::FunctionCallArgsDelta(delta) => {
-                                    yield Ok(streaming::RawStreamingChoice::ToolCallDelta { id: delta.item_id.clone(), delta: delta.delta.clone() })
+                                    // item_id is in chunk, not delta, due to serde flatten
+                                    let id = chunk.item_id.clone().unwrap_or_default();
+                                    yield Ok(streaming::RawStreamingChoice::ToolCallDelta { id, delta: delta.delta.clone() })
                                 }
 
                                 _ => { continue }
